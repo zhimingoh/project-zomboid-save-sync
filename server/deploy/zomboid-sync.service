@@ -1,0 +1,25 @@
+[Unit]
+Description=Zomboid Save Sync API
+After=network.target
+
+[Service]
+Type=simple
+User=zomboid-sync
+Group=zomboid-sync
+WorkingDirectory=/opt/zomboid-sync/server
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=SYNC_DATA_DIR=/srv/zomboid-sync/data
+Environment=SYNC_MAX_BYTES=10737418240
+Environment=SYNC_MIN_FREE_BYTES=1073741824
+ExecStart=/usr/bin/node /opt/zomboid-sync/server/src/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/zomboid-sync/data
+
+[Install]
+WantedBy=multi-user.target

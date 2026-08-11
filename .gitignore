@@ -1,0 +1,14 @@
+server/data/
+server/node_modules/
+.env
+*.env
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+.DS_Store
+Thumbs.db
+*.exe
+*.msi
+*.dmg
+*.zip

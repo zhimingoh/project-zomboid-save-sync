@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zomboid 存档同步</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, "Segoe UI", sans-serif; background: #f4f5f7; color: #1d232b; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 680px; }
+      main { width: min(760px, 100%); margin: 0 auto; padding: 32px; }
+      h1 { margin: 0 0 8px; font-size: 26px; }
+      .subtitle { margin: 0 0 24px; color: #66717d; }
+      section { background: white; border: 1px solid #dfe3e8; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+      h2 { margin: 0 0 16px; font-size: 16px; }
+      label { display: block; margin: 12px 0 6px; color: #4f5965; font-size: 13px; }
+      input, select { width: 100%; height: 38px; border: 1px solid #c8ced6; border-radius: 6px; padding: 0 10px; background: #fff; color: inherit; }
+      .row { display: flex; gap: 8px; align-items: end; }
+      .row > :first-child { flex: 1; }
+      button { height: 38px; padding: 0 14px; border: 0; border-radius: 6px; background: #2463eb; color: white; cursor: pointer; font-weight: 600; }
+      button.secondary { background: #e9edf2; color: #25303b; }
+      button:disabled { cursor: wait; opacity: .55; }
+      .actions { display: flex; gap: 10px; margin-top: 18px; }
+      .status { position: relative; min-height: 42px; margin-top: 16px; border-radius: 6px; overflow: hidden; background: #f0f3f6; color: #475361; }
+      .status-fill { position: absolute; inset: 0 auto 0 0; width: 0%; background: #2463eb; transition: width 220ms ease; }
+      .status-text { position: relative; z-index: 1; display: flex; align-items: center; min-height: 42px; padding: 10px 12px; white-space: pre-wrap; }
+      .status.progress .status-text { color: white; text-shadow: 0 1px 1px rgba(0, 0, 0, .22); }
+      .status.error { background: #fff0f0; color: #a32828; }
+      .status.success { background: #ecf8ef; color: #196b32; }
+      .hint { color: #66717d; font-size: 12px; margin-top: 8px; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .section-heading h2 { margin: 0; }
+      .remote-list { border: 1px solid #dfe3e8; border-radius: 6px; overflow: hidden; }
+      .remote-empty { min-height: 56px; display: flex; align-items: center; padding: 12px; color: #66717d; }
+      .remote-item { width: 100%; min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #e7eaee; background: white; cursor: pointer; }
+      .remote-item:last-child { border-bottom: 0; }
+      .remote-item.selected { background: #edf4ff; box-shadow: inset 3px 0 #2463eb; }
+      .remote-details { flex: 1; min-width: 0; }
+      .remote-name { font-weight: 600; overflow-wrap: anywhere; }
+      .remote-meta { margin-top: 3px; color: #66717d; font-size: 12px; overflow-wrap: anywhere; }
+      button.danger { flex: none; background: #d9363e; }
+      .pagination { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 10px; }
+      .page-label { min-width: 78px; text-align: center; color: #66717d; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Zomboid 存档同步</h1>
+      <p class="subtitle">当前版本：手动上传或下载一个存档记录</p>
+
+      <section>
+        <h2>连接设置</h2>
+        <label for="endpoint">VPS API 地址</label>
+        <input id="endpoint" placeholder="https://sync.example.com" />
+        <label for="sync-key">同步密钥</label>
+        <div class="row">
+          <input id="sync-key" placeholder="两台电脑使用同一个密钥" />
+          <button id="generate-key" class="secondary" type="button">生成密钥</button>
+        </div>
+        <label for="device-name">设备名称</label>
+        <input id="device-name" placeholder="例如：Windows 台式机" />
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h2 id="remote-heading">VPS 现有存档（尚未查询）</h2>
+          <button id="refresh-remote" class="secondary" type="button">刷新</button>
+        </div>
+        <div id="remote-list" class="remote-list">
+          <div class="remote-empty">填写 API 地址和同步密钥后刷新</div>
+        </div>
+        <div class="pagination">
+          <button id="remote-prev" class="secondary" type="button" disabled>上一页</button>
+          <span id="remote-page" class="page-label">第 0/0 页</span>
+          <button id="remote-next" class="secondary" type="button" disabled>下一页</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>本地存档</h2>
+        <label for="save-root">Saves 目录</label>
+        <div class="row">
+          <input id="save-root" placeholder="自动检测或选择 Zomboid/Saves" readonly />
+          <button id="detect-root" class="secondary" type="button">自动检测</button>
+          <button id="pick-root" class="secondary" type="button">选择目录</button>
+        </div>
+        <label for="save-select">存档记录</label>
+        <select id="save-select"><option value="">先选择 Saves 目录</option></select>
+        <div class="hint">程序会把 Sandbox、Apocalypse 等模式显示为独立存档记录。</div>
+        <div class="actions">
+          <button id="upload" type="button">上传到 VPS</button>
+          <button id="download" type="button">从 VPS 下载</button>
+        </div>
+        <div id="status" class="status">
+          <div id="status-fill" class="status-fill"></div>
+          <div id="status-text" class="status-text">等待操作</div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
