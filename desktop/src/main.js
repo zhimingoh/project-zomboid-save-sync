@@ -329,12 +329,33 @@ downloadButton.addEventListener("click", async () => {
     setStatus("请先刷新并选择一个 VPS 存档", "error");
     return;
   }
+  let overwriteConfirmed = false;
+  try {
+    const localSaves = await invoke("list_saves", { saveRoot: saveRoot.value });
+    const matchingLocal = localSaves.find(
+      (save) => save.mode === remote.saveMode && save.name === remote.saveName,
+    );
+    if (matchingLocal) {
+      overwriteConfirmed = window.confirm(
+        `本地已存在同一个存档：${remote.saveMode} / ${remote.saveName}\n\n` +
+        "继续下载会永久删除本地版本，并使用 VPS 版本直接覆盖，不会创建备份。\n\n确定要覆盖吗？",
+      );
+      if (!overwriteConfirmed) {
+        setStatus("已取消下载，本地存档未被修改");
+        return;
+      }
+    }
+  } catch (error) {
+    setStatus(`下载前无法检查本地存档：${error}`, "error");
+    return;
+  }
   await runAction(downloadButton, () => invoke("download_save", {
     saveRoot: saveRoot.value,
     endpoint: endpoint.value.trim(),
     syncKey: syncKey.value.trim(),
     saveMode: remote.saveMode,
     saveName: remote.saveName,
+    overwriteConfirmed,
   }), false);
 });
 
@@ -368,4 +389,10 @@ listen("upload-progress", ({ payload }) => {
   setProgress(payload.percent, payload.message);
 }).catch((error) => {
   console.error("Failed to initialize upload progress listener", error);
+});
+
+listen("download-progress", ({ payload }) => {
+  setProgress(payload.percent, payload.message);
+}).catch((error) => {
+  console.error("Failed to initialize download progress listener", error);
 });

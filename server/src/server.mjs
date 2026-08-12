@@ -10,6 +10,10 @@ const dataDir = path.resolve(process.env.SYNC_DATA_DIR || "./data");
 const maxSnapshotBytes = Number(process.env.SYNC_MAX_BYTES || 10 * 1024 * 1024 * 1024);
 const minFreeBytes = Number(process.env.SYNC_MIN_FREE_BYTES || 1024 * 1024 * 1024);
 const maxChunkBytes = Number(process.env.SYNC_MAX_CHUNK_BYTES || 16 * 1024 * 1024);
+const uploadRetentionMs = Number(process.env.SYNC_UPLOAD_RETENTION_MS || 7 * 24 * 60 * 60 * 1000);
+const uploadCleanupIntervalMs = Number(process.env.SYNC_UPLOAD_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
+let lastUploadCleanupAt = 0;
+const publishQueues = new Map();
 
 function corsHeaders() {
   return {
@@ -64,6 +68,20 @@ function saveId(saveMode, saveName) {
 
 function targetSaveDir(space, saveMode, saveName) {
   return path.join(space, "saves", saveId(saveMode, saveName));
+}
+
+async function serializePublish(key, operation) {
+  const previous = publishQueues.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  publishQueues.set(key, current);
+  await previous.catch(() => {});
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (publishQueues.get(key) === current) publishQueues.delete(key);
+  }
 }
 
 async function readManifest(dir) {
@@ -152,6 +170,71 @@ function validUploadId(value) {
   return typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
 }
 
+function validSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function manifestVersion(manifest) {
+  return manifest?.exists ? `${manifest.updatedAt || ""}:${manifest.sha256 || ""}` : "none";
+}
+
+async function writeUploadMetadata(uploadDir, metadata) {
+  const tmp = path.join(uploadDir, `upload.${process.pid}.${Date.now()}.tmp`);
+  await writeFile(tmp, JSON.stringify(metadata, null, 2), "utf8");
+  await rename(tmp, path.join(uploadDir, "upload.json"));
+}
+
+async function readUploadMetadata(uploadDir) {
+  return JSON.parse(await readFile(path.join(uploadDir, "upload.json"), "utf8"));
+}
+
+async function cleanupExpiredUploads(force = false) {
+  const now = Date.now();
+  if (!force && now - lastUploadCleanupAt < uploadCleanupIntervalMs) return;
+  lastUploadCleanupAt = now;
+  let spaces;
+  try {
+    spaces = await readdir(dataDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  for (const space of spaces) {
+    if (!space.isDirectory() || !/^[a-f0-9]{64}$/.test(space.name)) continue;
+    const uploadsRoot = path.join(dataDir, space.name, "uploads");
+    let uploads;
+    try {
+      uploads = await readdir(uploadsRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const upload of uploads) {
+      if (!upload.isDirectory() || !validUploadId(upload.name)) continue;
+      const uploadDir = path.join(uploadsRoot, upload.name);
+      try {
+        const metadata = await readUploadMetadata(uploadDir);
+        const explicitExpiry = Date.parse(metadata.expiresAt || "");
+        const createdAt = Date.parse(metadata.createdAt || "");
+        const expiresAt = Number.isFinite(explicitExpiry) ? explicitExpiry : createdAt + uploadRetentionMs;
+        if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+          await rm(uploadDir, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (error.code !== "ENOENT") await rm(uploadDir, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
+async function touchUpload(uploadDir, metadata) {
+  const lastActivityAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + uploadRetentionMs).toISOString();
+  const updated = { ...metadata, lastActivityAt, expiresAt };
+  await writeUploadMetadata(uploadDir, updated);
+  return updated;
+}
+
 async function readJsonBody(req, maxBytes = 64 * 1024) {
   const chunks = [];
   let bytes = 0;
@@ -164,6 +247,7 @@ async function readJsonBody(req, maxBytes = 64 * 1024) {
 }
 
 async function initChunkedUpload(req, res, syncKey) {
+  await cleanupExpiredUploads();
   const space = await ensureSpace(syncKey);
   const body = await readJsonBody(req);
   const totalBytes = Number(body.totalBytes);
@@ -171,6 +255,10 @@ async function initChunkedUpload(req, res, syncKey) {
   const chunkCount = Number(body.chunkCount);
   const saveMode = safeHeader(body.saveMode, "Sandbox");
   const saveName = safeHeader(body.saveName, "Unknown save");
+  const zipSha256 = body.zipSha256 == null ? null : String(body.zipSha256).toLowerCase();
+  if (zipSha256 !== null && !validSha256(zipSha256)) {
+    return json(res, 400, { error: "invalid_zip_sha256" });
+  }
   const currentManifest = await exactManifest(space, saveMode, saveName);
   if (currentManifest.exists && body.overwriteConfirmed !== true) {
     return json(res, 409, { error: "overwrite_confirmation_required", current: currentManifest });
@@ -191,7 +279,8 @@ async function initChunkedUpload(req, res, syncKey) {
   const uploadId = crypto.randomBytes(16).toString("hex");
   const uploadDir = path.join(space, "uploads", uploadId);
   await mkdir(uploadDir, { recursive: true });
-  await writeFile(path.join(uploadDir, "upload.json"), JSON.stringify({
+  const createdAt = new Date().toISOString();
+  await writeUploadMetadata(uploadDir, {
     totalBytes,
     chunkSize,
     chunkCount,
@@ -200,19 +289,54 @@ async function initChunkedUpload(req, res, syncKey) {
     deviceName: safeHeader(body.deviceName, "Unknown device"),
     gameVersion: safeHeader(body.gameVersion, "Unknown"),
     overwriteConfirmed: body.overwriteConfirmed === true,
-    createdAt: new Date().toISOString(),
-  }, null, 2));
+    zipSha256,
+    baseVersion: manifestVersion(currentManifest),
+    createdAt,
+    lastActivityAt: createdAt,
+    expiresAt: new Date(Date.now() + uploadRetentionMs).toISOString(),
+  });
   return json(res, 201, { uploadId, chunkSize, chunkCount });
 }
 
+async function uploadStatus(res, syncKey, uploadId) {
+  await cleanupExpiredUploads();
+  if (!validUploadId(uploadId)) return json(res, 400, { error: "invalid_upload_id" });
+  const uploadDir = path.join(await ensureSpace(syncKey), "uploads", uploadId);
+  let metadata;
+  try {
+    metadata = await readUploadMetadata(uploadDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return json(res, 404, { error: "upload_not_found" });
+    throw error;
+  }
+  if (Date.parse(metadata.expiresAt || "") <= Date.now()) {
+    await rm(uploadDir, { recursive: true, force: true });
+    return json(res, 404, { error: "upload_expired" });
+  }
+  const completedChunks = [];
+  for (let index = 0; index < metadata.chunkCount; index += 1) {
+    try {
+      const info = await stat(path.join(uploadDir, `${index}.part`));
+      const expected = index === metadata.chunkCount - 1
+        ? metadata.totalBytes - metadata.chunkSize * index
+        : metadata.chunkSize;
+      if (info.size === expected) completedChunks.push(index);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return json(res, 200, { ...metadata, uploadId, completedChunks });
+}
+
 async function uploadChunk(req, res, syncKey, uploadId, indexText) {
+  await cleanupExpiredUploads();
   if (!validUploadId(uploadId)) return json(res, 400, { error: "invalid_upload_id" });
   const space = await ensureSpace(syncKey);
   const index = Number(indexText);
   const uploadDir = path.join(space, "uploads", uploadId);
   let metadata;
   try {
-    metadata = JSON.parse(await readFile(path.join(uploadDir, "upload.json"), "utf8"));
+    metadata = await readUploadMetadata(uploadDir);
   } catch (error) {
     if (error.code === "ENOENT") return json(res, 404, { error: "upload_not_found" });
     throw error;
@@ -252,6 +376,7 @@ async function uploadChunk(req, res, syncKey, uploadId, indexText) {
     }
     await rm(finalPath, { force: true });
     await rename(tmpPath, finalPath);
+    await touchUpload(uploadDir, metadata);
     return json(res, 200, { index, bytes, sha256: digest });
   } catch (error) {
     output.destroy();
@@ -260,13 +385,14 @@ async function uploadChunk(req, res, syncKey, uploadId, indexText) {
   }
 }
 
-async function completeChunkedUpload(res, syncKey, uploadId) {
+async function completeChunkedUploadUnlocked(res, syncKey, uploadId) {
+  await cleanupExpiredUploads();
   if (!validUploadId(uploadId)) return json(res, 400, { error: "invalid_upload_id" });
   const space = await ensureSpace(syncKey);
   const uploadDir = path.join(space, "uploads", uploadId);
   let metadata;
   try {
-    metadata = JSON.parse(await readFile(path.join(uploadDir, "upload.json"), "utf8"));
+    metadata = await readUploadMetadata(uploadDir);
   } catch (error) {
     if (error.code === "ENOENT") return json(res, 404, { error: "upload_not_found" });
     throw error;
@@ -275,6 +401,9 @@ async function completeChunkedUpload(res, syncKey, uploadId) {
   const currentManifest = await readManifest(target);
   if (currentManifest.exists && metadata.overwriteConfirmed !== true) {
     return json(res, 409, { error: "overwrite_confirmation_required", current: currentManifest });
+  }
+  if (metadata.baseVersion != null && manifestVersion(currentManifest) !== metadata.baseVersion) {
+    return json(res, 409, { error: "remote_snapshot_changed", current: currentManifest });
   }
   const entries = await readdir(uploadDir);
   for (let index = 0; index < metadata.chunkCount; index += 1) {
@@ -295,9 +424,16 @@ async function completeChunkedUpload(res, syncKey, uploadId) {
   } finally {
     await output.close();
   }
-  if (bytes !== metadata.totalBytes) {
+  const assembledSha256 = hash.digest("hex");
+  if (bytes !== metadata.totalBytes || (metadata.zipSha256 && assembledSha256 !== metadata.zipSha256)) {
     await rm(assembledPath, { force: true });
-    return json(res, 409, { error: "assembled_size_mismatch", expectedBytes: metadata.totalBytes, bytes });
+    return json(res, 409, {
+      error: "assembled_verification_failed",
+      expectedBytes: metadata.totalBytes,
+      bytes,
+      expectedSha256: metadata.zipSha256,
+      sha256: assembledSha256,
+    });
   }
 
   await mkdir(target, { recursive: true });
@@ -311,7 +447,7 @@ async function completeChunkedUpload(res, syncKey, uploadId) {
   const manifest = {
     exists: true,
     bytes,
-    sha256: hash.digest("hex"),
+    sha256: assembledSha256,
     updatedAt: new Date().toISOString(),
     saveMode: metadata.saveMode,
     saveName: metadata.saveName,
@@ -321,6 +457,21 @@ async function completeChunkedUpload(res, syncKey, uploadId) {
   await writeManifest(target, manifest);
   await rm(uploadDir, { recursive: true, force: true });
   return json(res, 200, manifest);
+}
+
+async function completeChunkedUpload(res, syncKey, uploadId) {
+  if (!validUploadId(uploadId)) return json(res, 400, { error: "invalid_upload_id" });
+  const space = await ensureSpace(syncKey);
+  const uploadDir = path.join(space, "uploads", uploadId);
+  let metadata;
+  try {
+    metadata = await readUploadMetadata(uploadDir);
+  } catch (error) {
+    if (error.code === "ENOENT") return json(res, 404, { error: "upload_not_found" });
+    throw error;
+  }
+  const key = `${space}\0${saveId(metadata.saveMode, metadata.saveName)}`;
+  return serializePublish(key, () => completeChunkedUploadUnlocked(res, syncKey, uploadId));
 }
 
 async function uploadSnapshot(req, res, syncKey) {
@@ -446,6 +597,8 @@ export function createSyncServer() {
       if (url.pathname === "/v1/snapshot" && req.method === "PUT") return uploadSnapshot(req, res, syncKey);
       if (url.pathname === "/v1/snapshot" && req.method === "GET") return downloadSnapshot(res, syncKey, url);
       if (url.pathname === "/v1/uploads" && req.method === "POST") return initChunkedUpload(req, res, syncKey);
+      const statusMatch = url.pathname.match(/^\/v1\/uploads\/([a-f0-9]{32})$/);
+      if (statusMatch && req.method === "GET") return uploadStatus(res, syncKey, statusMatch[1]);
       const chunkMatch = url.pathname.match(/^\/v1\/uploads\/([a-f0-9]{32})\/chunks\/(\d+)$/);
       if (chunkMatch && req.method === "PUT") return uploadChunk(req, res, syncKey, chunkMatch[1], chunkMatch[2]);
       const completeMatch = url.pathname.match(/^\/v1\/uploads\/([a-f0-9]{32})\/complete$/);
@@ -461,6 +614,7 @@ export function createSyncServer() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await mkdir(dataDir, { recursive: true });
+  await cleanupExpiredUploads(true);
   createSyncServer().listen(port, "0.0.0.0", () => {
     console.log(`Zomboid sync API listening on :${port}`);
     console.log(`Data directory: ${dataDir}`);

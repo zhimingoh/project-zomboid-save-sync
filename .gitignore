@@ -12,3 +12,12 @@ Thumbs.db
 *.msi
 *.dmg
 *.zip
+
+# Local release artifacts
+outputs/
+
+# eo-project local management side
+.eo-project/
+
+# eo-doc sync cursor
+eo-doc/.sync-cursor

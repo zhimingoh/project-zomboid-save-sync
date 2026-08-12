@@ -31,6 +31,8 @@ Project Zomboid Save Sync 提供一个简单的桌面客户端，把选中的单
 - 上传前压缩存档，并按 256 KiB 分片上传。
 - 分阶段显示检查、压缩、上传和服务器保存进度。
 - 网络中断时自动重试分片。
+- 本地存档未变化时复用已校验的 ZIP 缓存，跳过重复压缩。
+- 上传失败或客户端重启后，可在会话有效期内从 VPS 已接收的分片继续上传。
 - 每个独立存档保留当前版本和上一个回滚版本。
 - 自动忽略 macOS 生成的 `__MACOSX` 元数据目录。
 
@@ -68,6 +70,10 @@ macOS 客户端源码已经兼容，但 macOS 安装包需要在 macOS 上构建
 
 一个同步密钥可以保存多个存档。每个存档最多保留当前快照和上一个快照，因此实际磁盘占用可能接近所有压缩存档总大小的两倍。未完成上传也会临时占用空间。
 
+桌面客户端会在应用数据目录中为每个已上传存档保留一份最新 ZIP 缓存。再次上传未变化的存档时会扫描文件清单并校验缓存，然后跳过压缩。存档变化或缓存损坏时会自动重建；缓存不会写入游戏的 `Zomboid/Saves` 目录。
+
+未完成上传默认在 VPS 保留 7 天。客户端会保存不含明文同步密钥的恢复状态，并在重新上传相同且未变化的存档时仅发送缺失分片。超过保留期后，服务端会清理分片，下次上传自动创建新会话。
+
 ### 部署服务端
 
 以下示例把项目部署到 `/opt/zomboid-sync`，把存档数据放到 `/srv/zomboid-sync/data`。
@@ -94,6 +100,8 @@ curl http://127.0.0.1:8787/health
 - `SYNC_DATA_DIR`：存档数据目录。
 - `SYNC_MAX_BYTES`：单个压缩快照的最大字节数。
 - `SYNC_MIN_FREE_BYTES`：服务器必须保留的最小可用空间。
+- `SYNC_UPLOAD_RETENTION_MS`：未完成上传在最后活动后保留的毫秒数，默认 `604800000`（7 天）。
+- `SYNC_UPLOAD_CLEANUP_INTERVAL_MS`：过期上传清理的最小触发间隔，默认 `3600000`（1 小时）。
 
 修改后执行：
 
@@ -221,6 +229,8 @@ This project does not provide a hosted cloud service. The person deploying the s
 - ZIP compression and 256 KiB chunked uploads.
 - Separate progress for process checking, compression, upload, and server storage.
 - Automatic chunk retries after temporary network failures.
+- Reuses a verified local ZIP cache when the save has not changed, avoiding repeated compression.
+- Resumes missing chunks after an upload failure or client restart while the server session remains valid.
 - Current and previous snapshots for each individual save.
 - Ignores macOS `__MACOSX` metadata directories.
 
@@ -258,6 +268,10 @@ The server has no npm runtime dependencies. By default, one compressed snapshot 
 
 A sync key may contain multiple saves. Each save can retain its current and previous snapshots, so storage can approach twice the combined compressed size of all saves. Incomplete uploads also consume temporary space.
 
+The desktop client keeps one latest ZIP cache per uploaded save in the application data directory. For an unchanged save, it scans the file manifest, verifies the cached ZIP, and skips compression. Changed saves and damaged caches are rebuilt automatically. Cache files are never written inside `Zomboid/Saves`.
+
+Incomplete uploads are retained on the VPS for seven days by default. The client stores resume metadata without the plaintext sync key and uploads only missing chunks when the same unchanged save is retried. Expired server sessions are cleaned automatically, after which a new upload session is created.
+
 ### Deploy the server
 
 This example installs the application at `/opt/zomboid-sync` and stores data at `/srv/zomboid-sync/data`:
@@ -284,6 +298,8 @@ The service file exposes these settings:
 - `SYNC_DATA_DIR`: snapshot storage directory.
 - `SYNC_MAX_BYTES`: maximum compressed snapshot size.
 - `SYNC_MIN_FREE_BYTES`: disk space that must remain free.
+- `SYNC_UPLOAD_RETENTION_MS`: incomplete upload retention after last activity, default `604800000` (seven days).
+- `SYNC_UPLOAD_CLEANUP_INTERVAL_MS`: minimum interval between expired upload cleanup scans, default `3600000` (one hour).
 
 After changing the service file:
 

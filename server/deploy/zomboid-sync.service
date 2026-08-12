@@ -12,6 +12,8 @@ Environment=PORT=8787
 Environment=SYNC_DATA_DIR=/srv/zomboid-sync/data
 Environment=SYNC_MAX_BYTES=10737418240
 Environment=SYNC_MIN_FREE_BYTES=1073741824
+Environment=SYNC_UPLOAD_RETENTION_MS=604800000
+Environment=SYNC_UPLOAD_CLEANUP_INTERVAL_MS=3600000
 ExecStart=/usr/bin/node /opt/zomboid-sync/server/src/server.mjs
 Restart=on-failure
 RestartSec=5
