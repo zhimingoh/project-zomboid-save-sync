@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zomboid 存档同步",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.zomboid.savesync",
   "build": {
     "beforeDevCommand": "npm run dev",

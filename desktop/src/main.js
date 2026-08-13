@@ -24,6 +24,7 @@ let remoteTotalBytes = 0;
 let remotePage = 0;
 let selectedRemoteKey = "";
 let uploadInProgress = false;
+let closingConfirmed = false;
 
 const saved = JSON.parse(localStorage.getItem("zomboid-sync-settings") || "{}");
 endpoint.value = saved.endpoint || "";
@@ -380,13 +381,19 @@ remoteNextButton.addEventListener("click", () => {
 });
 
 getCurrentWindow().onCloseRequested(async (event) => {
-  if (!uploadInProgress) return;
+  if (closingConfirmed) return;
   event.preventDefault();
+  const message = uploadInProgress
+    ? "存档正在上传中。现在关闭程序会立即中断本次上传；VPS 已收到的分片会在有效期内保留，之后可以继续上传，但本次存档不会作为完整版本发布。\n\n确定要关闭程序吗？"
+    : "当前没有正在进行的上传任务。确定要关闭程序吗？";
   const confirmed = await confirmAction(
     "确认关闭程序",
-    "存档仍在上传中。现在关闭程序会中断上传，本次上传可能无法完成。\n\n确定要关闭程序吗？",
+    message,
   );
-  if (confirmed) await getCurrentWindow().destroy();
+  if (confirmed) {
+    closingConfirmed = true;
+    await getCurrentWindow().destroy();
+  }
 }).catch((error) => {
   console.error("Failed to initialize close confirmation", error);
 });

@@ -1,6 +1,6 @@
 [package]
 name = "zomboid-save-sync"
-version = "0.1.0"
+version = "0.1.1"
 description = "Project Zomboid save synchronization MVP"
 authors = ["Zomboid Save Sync"]
 edition = "2021"
