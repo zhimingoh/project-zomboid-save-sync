@@ -9,6 +9,7 @@ use std::{
 
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
+use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
@@ -932,6 +933,20 @@ fn list_remote_saves(endpoint: String, sync_key: String) -> Result<RemoteSaveLib
 }
 
 #[tauri::command]
+fn confirm_action(title: String, message: String, app: tauri::AppHandle) -> bool {
+    let window = app.get_webview_window("main");
+    let mut dialog = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title(title)
+        .set_description(message)
+        .set_buttons(MessageButtons::YesNo);
+    if let Some(window) = window.as_ref() {
+        dialog = dialog.set_parent(window);
+    }
+    matches!(dialog.show(), MessageDialogResult::Yes)
+}
+
+#[tauri::command]
 fn delete_remote_save(
     endpoint: String,
     sync_key: String,
@@ -1454,6 +1469,7 @@ pub fn run() {
             pick_directory,
             list_saves,
             list_remote_saves,
+            confirm_action,
             delete_remote_save,
             upload_save,
             download_save

@@ -88,6 +88,10 @@ function remoteKey(save) {
   return `${save.saveMode}\u0000${save.saveName}`;
 }
 
+async function confirmAction(title, message) {
+  return invoke("confirm_action", { title, message });
+}
+
 function setAllButtonsDisabled(value) {
   for (const button of document.querySelectorAll("button")) button.disabled = value;
 }
@@ -116,11 +120,11 @@ function renderRemoteList() {
       details.className = "remote-details";
       const name = document.createElement("div");
       name.className = "remote-name";
-      name.textContent = `${save.saveMode} / ${save.saveName}`;
+      const updatedAt = save.updatedAt ? new Date(save.updatedAt).toLocaleString() : "时间未知";
+      name.textContent = `${save.saveMode} / ${save.saveName}（上传时间：${updatedAt}）`;
       const meta = document.createElement("div");
       meta.className = "remote-meta";
-      const updatedAt = save.updatedAt ? new Date(save.updatedAt).toLocaleString() : "时间未知";
-      meta.textContent = `${formatBytes(save.bytes)} · ${updatedAt} · ${save.deviceName || "未知设备"}`;
+      meta.textContent = `${formatBytes(save.bytes)} · ${save.deviceName || "未知设备"}`;
       details.append(name, meta);
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
@@ -163,7 +167,8 @@ async function refreshRemote({ showStatus = true } = {}) {
 }
 
 async function deleteRemoteSave(save) {
-  const confirmed = window.confirm(
+  const confirmed = await confirmAction(
+    "确认删除 VPS 存档",
     `确定要永久删除 VPS 存档吗？\n\n${save.saveMode} / ${save.saveName}\n\n` +
     "该存档的当前版本和上一个回滚版本都会被删除，此操作无法撤销。",
   );
@@ -298,7 +303,8 @@ uploadButton.addEventListener("click", async () => {
   const matchingRemote = saves.find((remote) => remote.saveMode === save.mode && remote.saveName === save.name);
   let overwriteConfirmed = false;
   if (matchingRemote) {
-    overwriteConfirmed = window.confirm(
+    overwriteConfirmed = await confirmAction(
+      "确认覆盖 VPS 存档",
       `VPS 上已存在同一个存档：${matchingRemote.saveMode} / ${matchingRemote.saveName}\n\n` +
       `继续上传将覆盖这个存档，并把它的当前版本移入上一个回滚版本。\n\n确定要覆盖吗？`,
     );
@@ -336,7 +342,8 @@ downloadButton.addEventListener("click", async () => {
       (save) => save.mode === remote.saveMode && save.name === remote.saveName,
     );
     if (matchingLocal) {
-      overwriteConfirmed = window.confirm(
+      overwriteConfirmed = await confirmAction(
+        "确认覆盖本地存档",
         `本地已存在同一个存档：${remote.saveMode} / ${remote.saveName}\n\n` +
         "继续下载会永久删除本地版本，并使用 VPS 版本直接覆盖，不会创建备份。\n\n确定要覆盖吗？",
       );
@@ -375,7 +382,8 @@ remoteNextButton.addEventListener("click", () => {
 getCurrentWindow().onCloseRequested(async (event) => {
   if (!uploadInProgress) return;
   event.preventDefault();
-  const confirmed = window.confirm(
+  const confirmed = await confirmAction(
+    "确认关闭程序",
     "存档仍在上传中。现在关闭程序会中断上传，本次上传可能无法完成。\n\n确定要关闭程序吗？",
   );
   if (confirmed) await getCurrentWindow().destroy();
